@@ -279,8 +279,13 @@ class AsyncAwaitSyncTests: SwiftSyncTestCase {
 
         let configuration = try configuration()
         func isolatedOpen(_ actor: isolated CustomExecutorActor) async throws {
+#if compiler(<6)
             _ = try await Realm(configuration: configuration, actor: actor, downloadBeforeOpen: .always)
+#else
+            _ = try await Realm.open(configuration: configuration, downloadBeforeOpen: .always)
+#endif
         }
+
 
         // Try opening the Realm with the Task being cancelled at every possible
         // point between executor invocations. This doesn't really test that
@@ -350,7 +355,7 @@ class AsyncAwaitSyncTests: SwiftSyncTestCase {
 
     func testUserCallFunctionAsyncAwait() async throws {
         let user = try await self.app.login(credentials: basicCredentials())
-        guard case let .int32(sum) = try await user.functions.sum(.array([1, 2, 3, 4, 5])) else {
+        guard case let .int32(sum) = try await user.functions.sum(1, 2, 3, 4, 5) else {
             return XCTFail("Should be int32")
         }
         XCTAssertEqual(sum, 15)
@@ -418,9 +423,7 @@ class AsyncAwaitSyncTests: SwiftSyncTestCase {
 
     func testCustomUserDataAsyncAwait() async throws {
         let user = try await createUser()
-        _ = try await user.functions.updateUserData([
-            ["favourite_colour": "green", "apples": 10]
-        ])
+        _ = try await user.functions.updateUserData(["favourite_colour": "green", "apples": 10])
 
         try await user.refreshCustomData()
         XCTAssertEqual(user.customData["favourite_colour"], .string("green"))
@@ -442,6 +445,7 @@ class AsyncAwaitSyncTests: SwiftSyncTestCase {
         XCTAssertEqual(app.allUsers.count, 0)
     }
 
+    @MainActor
     func testSwiftAddObjectsAsync() async throws {
         let realm = try await openRealm()
         checkCount(expected: 0, realm, SwiftPerson.self)
@@ -535,10 +539,11 @@ class AsyncFlexibleSyncTests: SwiftSyncTestCase {
         try await populateSwiftPerson(5)
 
         let user = try await createUser()
+        let name = self.name
         try await Task {
             var config = user.flexibleSyncConfiguration(initialSubscriptions: { subs in
                 subs.append(QuerySubscription<SwiftPerson> {
-                    $0.age > 0 && $0.firstName == self.name
+                    $0.age > 0 && $0.firstName == name
                 })
             })
             config.objectTypes = [SwiftPerson.self]
@@ -557,7 +562,7 @@ class AsyncFlexibleSyncTests: SwiftSyncTestCase {
 
         var config = user.flexibleSyncConfiguration(initialSubscriptions: { subs in
             subs.append(QuerySubscription<SwiftPerson> {
-                $0.age > 5 && $0.firstName == self.name
+                $0.age > 5 && $0.firstName == name
             })
         })
         config.objectTypes = [SwiftPerson.self]
@@ -567,7 +572,7 @@ class AsyncFlexibleSyncTests: SwiftSyncTestCase {
 
         var config2 = user.flexibleSyncConfiguration(initialSubscriptions: { subs in
             subs.append(QuerySubscription<SwiftPerson> {
-                $0.age > 0 && $0.firstName == self.name
+                $0.age > 0 && $0.firstName == name
             })
         })
         config2.objectTypes = [SwiftPerson.self]
@@ -621,9 +626,10 @@ class AsyncFlexibleSyncTests: SwiftSyncTestCase {
         }
 
         let user = try await createUser()
+        let name = self.name
         var config = user.flexibleSyncConfiguration(initialSubscriptions: { subscriptions in
             subscriptions.append(QuerySubscription<SwiftPerson>(name: "person_age_10") {
-                $0.age > 10 && $0.firstName == "\(self.name)"
+                $0.age > 10 && $0.firstName == "\(name)"
             })
         })
         config.objectTypes = [SwiftPerson.self]
@@ -639,10 +645,11 @@ class AsyncFlexibleSyncTests: SwiftSyncTestCase {
 
     @MainActor
     func testFlexibleSyncInitialSubscriptionsNotRerunOnOpen() async throws {
+        let name = self.name
         let user = try await createUser()
         var config = user.flexibleSyncConfiguration(initialSubscriptions: { subscriptions in
             subscriptions.append(QuerySubscription<SwiftPerson>(name: "person_age_10") {
-                $0.age > 10 && $0.firstName == "\(self.name)"
+                $0.age > 10 && $0.firstName == "\(name)"
             })
         })
         config.objectTypes = [SwiftPerson.self]
@@ -657,10 +664,11 @@ class AsyncFlexibleSyncTests: SwiftSyncTestCase {
     @MainActor
     func testFlexibleSyncInitialSubscriptionsRerunOnOpenNamedQuery() async throws {
         let user = try await createUser()
+        let name = self.name
         var config = user.flexibleSyncConfiguration(initialSubscriptions: { subscriptions in
             if subscriptions.first(named: "person_age_10") == nil {
                 subscriptions.append(QuerySubscription<SwiftPerson>(name: "person_age_10") {
-                    $0.age > 20 && $0.firstName == "\(self.name)"
+                    $0.age > 20 && $0.firstName == "\(name)"
                 })
             }
         }, rerunOnOpen: true)
@@ -698,6 +706,7 @@ class AsyncFlexibleSyncTests: SwiftSyncTestCase {
 
         let user = try await createUser()
         let isFirstOpen = Locked(true)
+        let name = self.name
         var config = user.flexibleSyncConfiguration(initialSubscriptions: { subscriptions in
             subscriptions.append(QuerySubscription<SwiftTypesSyncObject>(query: {
                 let date = isFirstOpen.wrappedValue ? Calendar.current.date(
@@ -708,7 +717,7 @@ class AsyncFlexibleSyncTests: SwiftSyncTestCase {
                         value: -20,
                         to: Date())
                 isFirstOpen.wrappedValue = false
-                return $0.stringCol == self.name && $0.dateCol < Date() && $0.dateCol > date!
+                return $0.stringCol == name && $0.dateCol < Date() && $0.dateCol > date!
             }))
         }, rerunOnOpen: true)
         config.objectTypes = [SwiftTypesSyncObject.self, SwiftPerson.self]
@@ -825,7 +834,7 @@ class AsyncFlexibleSyncTests: SwiftSyncTestCase {
             .subscribe(name: "8 or older")
         realm.syncSession!.suspend()
         let ex = XCTestExpectation(description: "no attempt to re-create subscription, returns immediately")
-        Task {
+        Task { @MainActor in
             _ = try await realm.objects(SwiftPerson.self)
                 .where { $0.firstName == name && $0.age >= 8 }
                 .subscribe(name: "8 or older")
@@ -875,7 +884,7 @@ class AsyncFlexibleSyncTests: SwiftSyncTestCase {
         let user = try await createUser()
         var config = user.flexibleSyncConfiguration()
         config.objectTypes = [SwiftPerson.self]
-        let realm = try await Realm(configuration: config, actor: MainActor.shared)
+        let realm = try await Realm(configuration: config)
         let results1 = try await realm.objects(SwiftPerson.self)
             .where { $0.firstName == name && $0.age > 8 }.subscribe(waitForSync: .onCreation)
         XCTAssertEqual(results1.count, 2)
@@ -890,12 +899,18 @@ class AsyncFlexibleSyncTests: SwiftSyncTestCase {
 
     @CustomGlobalActor
     func testSubscribeOnRealmConfinedCustomActor() async throws {
-        try await populateSwiftPerson()
+        nonisolated(unsafe) let unsafeSelf = self
+        try await unsafeSelf.populateSwiftPerson()
 
         let user = try await createUser()
         var config = user.flexibleSyncConfiguration()
         config.objectTypes = [SwiftPerson.self]
+#if compiler(<6)
         let realm = try await Realm(configuration: config, actor: CustomGlobalActor.shared)
+#else
+        let realm = try await Realm.open(configuration: config)
+#endif
+        let name = self.name
         let results1 = try await realm.objects(SwiftPerson.self)
             .where { $0.firstName == name && $0.age > 8 }.subscribe(waitForSync: .onCreation)
         XCTAssertEqual(results1.count, 2)
@@ -957,6 +972,7 @@ class AsyncFlexibleSyncTests: SwiftSyncTestCase {
         XCTAssertEqual(realm.subscriptions.first!.name, "sub1")
     }
 
+    @MainActor
     func testUnsubscribeNoExistingMatch() async throws {
         try await populateSwiftPerson()
         let realm = try await openRealm()
@@ -1153,6 +1169,7 @@ class AsyncFlexibleSyncTests: SwiftSyncTestCase {
 
     // MARK: - Custom Column
 
+    @MainActor
     func testCustomColumnFlexibleSyncSchema() throws {
         let realm = try openRealm()
         for property in realm.schema.objectSchema.first(where: { $0.className == "SwiftCustomColumnObject" })!.properties {
